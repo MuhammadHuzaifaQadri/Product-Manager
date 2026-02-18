@@ -24,15 +24,24 @@ class _LoginState extends State<Login> {
 
   Future<void> _login() async {
     if (_formKey.currentState!.validate()) {
-      setState(() {
-        _isLoading = true;
-      });
+      setState(() => _isLoading = true);
 
       try {
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
+        final userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: _emailController.text.trim(),
           password: _passwordController.text,
         );
+
+        // ✅ CHECK EMAIL VERIFICATION
+        if (!userCredential.user!.emailVerified) {
+          await FirebaseAuth.instance.signOut();
+          
+          if (mounted) {
+            _showVerificationDialog(userCredential.user!);
+          }
+          setState(() => _isLoading = false);
+          return;
+        }
 
         if (mounted) {
           Navigator.pushReplacementNamed(context, '/products');
@@ -45,6 +54,8 @@ class _LoginState extends State<Login> {
           message = 'Wrong password provided.';
         } else if (e.code == 'invalid-email') {
           message = 'Invalid email address.';
+        } else if (e.code == 'too-many-requests') {
+          message = 'Too many attempts. Try again later.';
         } else {
           message = e.message ?? 'An error occurred';
         }
@@ -59,11 +70,161 @@ class _LoginState extends State<Login> {
         }
       } finally {
         if (mounted) {
-          setState(() {
-            _isLoading = false;
-          });
+          setState(() => _isLoading = false);
         }
       }
+    }
+  }
+
+  void _showVerificationDialog(User user) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Email Not Verified'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.warning_amber, size: 50, color: Colors.orange),
+            const SizedBox(height: 16),
+            const Text(
+              'Please verify your email before logging in.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'We sent a verification link to:',
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _emailController.text,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Also check your SPAM folder',
+                style: TextStyle(fontSize: 12, color: Colors.orange),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await user.sendEmailVerification();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Verification email resent!'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Resend Email'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _forgotPassword() async {
+    if (_emailController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter your email first'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(
+        email: _emailController.text.trim(),
+      );
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Password Reset'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.mark_email_read, size: 50, color: Colors.green),
+                const SizedBox(height: 16),
+                const Text(
+                  'Reset email sent!',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Check your inbox: ${_emailController.text}',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Also check SPAM folder',
+                    style: TextStyle(fontSize: 12, color: Colors.orange),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      String message = 'Error sending reset email';
+      if (e.code == 'user-not-found') {
+        message = 'No user found with this email';
+      } else if (e.code == 'invalid-email') {
+        message = 'Invalid email address';
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
@@ -188,7 +349,22 @@ class _LoginState extends State<Login> {
                             return null;
                           },
                         ),
-                        const SizedBox(height: 24),
+                        
+                        // Forgot Password Link
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton(
+                              onPressed: _forgotPassword,
+                              child: const Text(
+                                'Forgot Password?',
+                                style: TextStyle(color: Colors.blue),
+                              ),
+                            ),
+                          ],
+                        ),
+                        
+                        const SizedBox(height: 16),
 
                         // Login Button
                         SizedBox(
@@ -233,7 +409,7 @@ class _LoginState extends State<Login> {
                             ),
                             TextButton(
                               onPressed: () {
-                                Navigator.pushNamed(context, '/signup');
+                                Navigator.pushReplacementNamed(context, '/signup');
                               },
                               child: const Text(
                                 'Sign Up',
