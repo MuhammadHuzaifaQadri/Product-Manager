@@ -1,197 +1,256 @@
 import 'dart:convert';
-import 'dart:html' as html;
+import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:csv/csv.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
-/// CSV Exporter - Export products to CSV file
+/// CSV Exporter - Export products to CSV file (Android compatible)
 class CSVExporter {
+  // ============ PUBLIC METHODS ============
+  
   /// Export all products to CSV
   static Future<void> exportProducts(BuildContext context) async {
-    try {
-      // Show loading
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              SizedBox(
-                height: 20,
-                width: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                ),
-              ),
-              SizedBox(width: 12),
-              Text('Preparing CSV export...'),
-            ],
-          ),
-          duration: Duration(seconds: 2),
-        ),
-      );
-
-      // Fetch all products
-      final snapshot = await FirebaseFirestore.instance.collection('products').get();
-      
-      if (snapshot.docs.isEmpty) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No products to export'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
-        return;
-      }
-
-      // Generate CSV content
-      final csvContent = _generateCSV(snapshot.docs);
-
-      // Download file
-      _downloadCSV(csvContent, 'products');
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ Exported ${snapshot.docs.length} products'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Export failed: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
+    await _exportData(
+      context: context,
+      collection: 'products',
+      fileName: 'products',
+      generateCSV: _generateProductsCSV,
+      successMessage: (count) => '✅ Exported $count products',
+      loadingMessage: 'Preparing products export...',
+    );
   }
 
   /// Export all users to CSV
   static Future<void> exportUsers(BuildContext context) async {
-    try {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              SizedBox(
-                height: 20,
-                width: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                ),
-              ),
-              SizedBox(width: 12),
-              Text('Exporting users...'),
-            ],
-          ),
-          duration: Duration(seconds: 2),
-        ),
-      );
-
-      final snapshot = await FirebaseFirestore.instance.collection('users').get();
-      
-      if (snapshot.docs.isEmpty) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No users to export'),
-              backgroundColor: Colors.orange,
-            ),
-          );
-        }
-        return;
-      }
-
-      final csvContent = _generateUsersCSV(snapshot.docs);
-      _downloadCSV(csvContent, 'users');
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ Exported ${snapshot.docs.length} users'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Export failed: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
+    await _exportData(
+      context: context,
+      collection: 'users',
+      fileName: 'users',
+      generateCSV: _generateUsersCSV,
+      successMessage: (count) => '✅ Exported $count users',
+      loadingMessage: 'Exporting users...',
+    );
   }
 
   /// Export all orders to CSV
   static Future<void> exportOrders(BuildContext context) async {
-    try {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
+    await _exportData(
+      context: context,
+      collection: 'orders',
+      fileName: 'orders',
+      generateCSV: _generateOrdersCSV,
+      successMessage: (count) => '✅ Exported $count orders',
+      loadingMessage: 'Exporting orders...',
+    );
+  }
+
+  /// Show export dialog with options
+  static Future<void> showExportDialog(BuildContext context) async {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          width: MediaQuery.of(context).size.width * 0.9,
+          constraints: const BoxConstraints(maxWidth: 400),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
-                height: 20,
-                width: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+              // Header
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFF1E3C72), Color(0xFF2A5298)],
+                  ),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
+                  ),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.download, color: Colors.white, size: 28),
+                    SizedBox(width: 12),
+                    Text(
+                      'Export Data',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              SizedBox(width: 12),
-              Text('Exporting orders...'),
+
+              // Content
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildExportOption(
+                      icon: Icons.inventory,
+                      color: Colors.blue,
+                      title: 'Export Products',
+                      subtitle: 'Download all products as CSV',
+                      onTap: () {
+                        Navigator.pop(context);
+                        exportProducts(context);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _buildExportOption(
+                      icon: Icons.people,
+                      color: Colors.green,
+                      title: 'Export Users',
+                      subtitle: 'Download all users as CSV',
+                      onTap: () {
+                        Navigator.pop(context);
+                        exportUsers(context);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _buildExportOption(
+                      icon: Icons.payment,
+                      color: Colors.orange,
+                      title: 'Export Orders',
+                      subtitle: 'Download order history as CSV',
+                      onTap: () {
+                        Navigator.pop(context);
+                        exportOrders(context);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+
+              // Close Button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.grey,
+                      side: const BorderSide(color: Colors.grey),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+              ),
             ],
           ),
-          duration: Duration(seconds: 2),
         ),
-      );
+      ),
+    );
+  }
 
-      final snapshot = await FirebaseFirestore.instance.collection('orders').get();
+  // ============ PRIVATE METHODS ============
+
+  /// Generic export function
+  static Future<void> _exportData({
+    required BuildContext context,
+    required String collection,
+    required String fileName,
+    required String Function(List<QueryDocumentSnapshot>) generateCSV,
+    required String Function(int count) successMessage,
+    required String loadingMessage,
+  }) async {
+    try {
+      // Show loading
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const SizedBox(
+                  height: 20,
+                  width: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Text(loadingMessage)),
+              ],
+            ),
+            backgroundColor: const Color(0xFF1E3C72),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Fetch data
+      final snapshot = await FirebaseFirestore.instance
+          .collection(collection)
+          .get();
       
       if (snapshot.docs.isEmpty) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No orders to export'),
-              backgroundColor: Colors.orange,
-            ),
+          _showToast(
+            context,
+            message: 'No $collection to export',
+            color: Colors.orange,
           );
         }
         return;
       }
 
-      final csvContent = _generateOrdersCSV(snapshot.docs);
-      _downloadCSV(csvContent, 'orders');
+      // Generate CSV
+      final csvContent = generateCSV(snapshot.docs);
+
+      // Save and share
+      await _shareCSV(csvContent, fileName);
 
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✅ Exported ${snapshot.docs.length} orders'),
-            backgroundColor: Colors.green,
-          ),
+        _showToast(
+          context,
+          message: successMessage(snapshot.docs.length),
+          color: Colors.green,
         );
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Export failed: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
+        _showToast(
+          context,
+          message: 'Export failed: ${e.toString()}',
+          color: Colors.red,
         );
       }
     }
   }
 
-  /// Generate CSV content from products
-  static String _generateCSV(List<QueryDocumentSnapshot> products) {
+  /// Share CSV file
+  static Future<void> _shareCSV(String csvContent, String filename) async {
+    try {
+      final directory = await getTemporaryDirectory();
+      final filePath = '${directory.path}/$filename.csv';
+      final file = File(filePath);
+      
+      await file.writeAsString(csvContent);
+      
+      await Share.shareXFiles(
+        [XFile(filePath)],
+        text: '$filename export - Product Manager App',
+      );
+    } catch (e) {
+      print('Error sharing file: $e');
+      rethrow;
+    }
+  }
+
+  /// Generate Products CSV
+  static String _generateProductsCSV(List<QueryDocumentSnapshot> products) {
     final headers = [
       'ID',
       'Title',
@@ -278,7 +337,7 @@ class CSVExporter {
     return value;
   }
 
-  /// Format Firestore timestamp to readable date
+  /// Format Firestore timestamp
   static String _formatDate(dynamic timestamp) {
     if (timestamp == null) return '';
     
@@ -293,91 +352,107 @@ class CSVExporter {
     return '';
   }
 
-  /// Download CSV file (Web)
-  static void _downloadCSV(String csvContent, String type) {
-    final bytes = utf8.encode(csvContent);
-    final blob = html.Blob([bytes]);
-    final url = html.Url.createObjectUrlFromBlob(blob);
-    
-    final anchor = html.AnchorElement(href: url)
-      ..setAttribute('download', '${type}_${DateTime.now().millisecondsSinceEpoch}.csv')
-      ..click();
-    
-    html.Url.revokeObjectUrl(url);
-  }
-
-  /// Show export dialog with options
-  static Future<void> showExportDialog(BuildContext context) async {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
+  /// Show toast message
+  static void _showToast(
+    BuildContext context, {
+    required String message,
+    required Color color,
+  }) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
           children: [
-            Icon(Icons.download, color: Colors.blue),
-            const SizedBox(width: 8),
-            const Text('Export Products'),
+            Icon(
+              color == Colors.green 
+                  ? Icons.check_circle 
+                  : (color == Colors.orange 
+                      ? Icons.warning 
+                      : Icons.error),
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Export all products to CSV file?'),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.shade200),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'CSV will include:',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  _buildInfoRow('• Product ID'),
-                  _buildInfoRow('• Title & Category'),
-                  _buildInfoRow('• Price & Stock'),
-                  _buildInfoRow('• Rating & SKU'),
-                  _buildInfoRow('• Description'),
-                  _buildInfoRow('• Creation date'),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Navigator.pop(context);
-              exportProducts(context);
-            },
-            icon: const Icon(Icons.file_download),
-            label: const Text('Export'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-              foregroundColor: Colors.white,
-            ),
-          ),
-        ],
+        backgroundColor: color,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
 
-  static Widget _buildInfoRow(String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Text(
-        text,
-        style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+  /// Build export option tile
+  static Widget _buildExportOption({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              color.withOpacity(0.1),
+              color.withOpacity(0.05),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [color, color.withOpacity(0.7)],
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: Colors.white, size: 24),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.arrow_forward_ios,
+                size: 16,
+                color: color,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

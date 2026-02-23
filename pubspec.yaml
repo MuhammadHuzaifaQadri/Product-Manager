@@ -1,10 +1,21 @@
 name: firebase_crud
-description: Complete Product Management System
+description: Complete Product Management System with QR, Chat, Admin Panel & AI Support
 publish_to: 'none'
 version: 1.0.0+1
 
 environment:
   sdk: '>=3.1.0 <4.0.0'
+
+# 👇 FIXED OVERRIDES - record_windows ka sahi version
+dependency_overrides:
+  record: ^5.2.1
+  record_linux: ^1.3.0
+  record_platform_interface: ^1.5.0
+  record_windows: ^1.0.0
+  record_android: ^1.2.0
+  record_ios: ^1.2.0
+  record_web: ^1.1.0
+  record_macos: ^1.1.0
 
 dependencies:
   flutter:
@@ -14,23 +25,31 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # Firebase
+  # Firebase Core
   firebase_core: ^3.15.2
   firebase_auth: ^5.3.4
   cloud_firestore: ^5.6.12
   
-  # Images
+  # 🔥 AI SUPPORT (Stable version)
+  google_generative_ai: ^0.4.6
+  
+  # Images & File Handling
   image_picker: ^1.1.2
   http: ^1.1.0
+  path_provider: ^2.1.2
+  share_plus: ^7.2.2
+  file_picker: ^8.1.2
   
   # State Management
   provider: ^6.1.1
   
-  # Storage
+  # Local Storage
   shared_preferences: ^2.2.2
   
-  # Device Preview
+  # UI/UX
   device_preview: ^1.2.0
+  intl: ^0.20.2
+  timeago: ^3.6.1  # ✅ For "2h ago" formatting in chat
   
   # Analytics & Charts
   fl_chart: ^0.66.0
@@ -38,21 +57,24 @@ dependencies:
   # QR Codes
   qr_flutter: ^4.1.0
   mobile_scanner: ^3.5.0
+  app_links: ^6.3.2  # Deep linking
   
   # CSV Export
   csv: ^6.0.0
-  path_provider: ^2.1.2
-  share_plus: ^7.2.2
   
-  # Voice Search
-  speech_to_text: ^6.6.0
+  # Voice Features
+  speech_to_text: ^7.0.0
+  record: ^5.2.1
+  audioplayers: ^5.2.1
+  
+  # Permissions
+  permission_handler: ^11.4.0
   
   # Notifications
-  flutter_local_notifications: ^17.0.0
+  flutter_local_notifications: ^17.2.4
   
-  # Time formatting
-  timeago: ^3.6.1
-  intl: ^0.20.2
+  # URL Launcher
+  url_launcher: ^6.2.1
 
 dev_dependencies:
   flutter_test:

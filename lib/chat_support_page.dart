@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:timeago/timeago.dart' as timeago;
 
 class ChatSupportPage extends StatefulWidget {
   const ChatSupportPage({Key? key}) : super(key: key);
@@ -9,29 +10,51 @@ class ChatSupportPage extends StatefulWidget {
   State<ChatSupportPage> createState() => _ChatSupportPageState();
 }
 
-class _ChatSupportPageState extends State<ChatSupportPage> {
-  User? _user;
-  final _messageController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  String? _chatId;
+class _ChatSupportPageState extends State<ChatSupportPage> with SingleTickerProviderStateMixin {
+  final user = FirebaseAuth.instance.currentUser;
   bool _isAdmin = false;
-  String? _selectedChatId;
+  String? _chatId;
   final GlobalKey<RefreshIndicatorState> _refreshKey = GlobalKey();
+  
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
 
   @override
   void initState() {
     super.initState();
-    _user = FirebaseAuth.instance.currentUser;
-    _checkAdmin();
-    _getOrCreateChat();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _animationController,
+        curve: Curves.easeIn,
+      ),
+    );
+    _animationController.forward();
+    _checkAdminAndSetup();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkAdminAndSetup() async {
+    if (user == null) return;
+    await _checkAdmin();
+    if (!_isAdmin) {
+      await _getOrCreateChat();
+    }
   }
 
   Future<void> _checkAdmin() async {
-    if (_user == null) return;
     try {
       final doc = await FirebaseFirestore.instance
           .collection('users')
-          .doc(_user!.uid)
+          .doc(user!.uid)
           .get();
       setState(() {
         _isAdmin = doc.data()?['role'] == 'admin';
@@ -42,12 +65,10 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
   }
 
   Future<void> _getOrCreateChat() async {
-    if (_user == null || _isAdmin) return;
-
     try {
       final existingChats = await FirebaseFirestore.instance
           .collection('chats')
-          .where('userId', isEqualTo: _user!.uid)
+          .where('userId', isEqualTo: user!.uid)
           .where('status', isEqualTo: 'active')
           .limit(1)
           .get();
@@ -64,14 +85,17 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
 
         if (admins.docs.isNotEmpty) {
           final chatRef = await FirebaseFirestore.instance.collection('chats').add({
-            'userId': _user!.uid,
-            'userName': _user!.displayName ?? _user!.email?.split('@')[0] ?? 'User',
-            'userEmail': _user!.email,
+            'userId': user!.uid,
+            'userName': user!.displayName ?? user!.email?.split('@')[0] ?? 'User',
+            'userEmail': user!.email,
             'adminId': admins.docs.first.id,
+            'adminName': admins.docs.first.data()['name'] ?? 'Admin',
             'status': 'active',
             'createdAt': FieldValue.serverTimestamp(),
             'lastMessage': '',
             'lastMessageTime': FieldValue.serverTimestamp(),
+            'userUnread': false,
+            'adminUnread': false,
           });
 
           setState(() {
@@ -84,83 +108,92 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
     }
   }
 
-  Future<void> _sendMessage() async {
-    if (_messageController.text.trim().isEmpty || _chatId == null) return;
-
-    final message = _messageController.text.trim();
-    _messageController.clear();
-
+  Future<void> _markChatAsRead(String chatId) async {
     try {
-      await FirebaseFirestore.instance.collection('messages').add({
-        'chatId': _chatId,
-        'senderId': _user!.uid,
-        'senderName': _user!.displayName ?? _user!.email?.split('@')[0] ?? 'User',
-        'senderRole': _isAdmin ? 'admin' : 'user',
-        'message': message,
-        'timestamp': FieldValue.serverTimestamp(),
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(chatId)
+          .update({
+        'adminUnread': false,
+        'userUnread': false,
       });
-
-      await FirebaseFirestore.instance.collection('chats').doc(_chatId).update({
-        'lastMessage': message,
-        'lastMessageTime': FieldValue.serverTimestamp(),
-      });
-
-      _scrollToBottom();
     } catch (e) {
-      print('Error sending message: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error sending message: $e'),
-            backgroundColor: Colors.red,
+      print('Error marking chat as read: $e');
+    }
+  }
+
+  Future<void> _deleteChat(String chatId, String userName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.delete_forever, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Delete Chat'),
+          ],
+        ),
+        content: Text('Delete chat with $userName? All messages will be deleted.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.grey,
+            ),
+            child: const Text('Cancel'),
           ),
-        );
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        final messages = await FirebaseFirestore.instance
+            .collection('messages')
+            .where('chatId', isEqualTo: chatId)
+            .get();
+        
+        for (var msg in messages.docs) {
+          await msg.reference.delete();
+        }
+        
+        await FirebaseFirestore.instance
+            .collection('chats')
+            .doc(chatId)
+            .delete();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ Chat with $userName deleted'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        print('Error deleting chat: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('❌ Error deleting chat'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
-    }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  String _formatTime(Timestamp? timestamp) {
-    if (timestamp == null) return '';
-    try {
-      final date = timestamp.toDate();
-      final hour = date.hour.toString().padLeft(2, '0');
-      final minute = date.minute.toString().padLeft(2, '0');
-      return '$hour:$minute';
-    } catch (e) {
-      return '';
-    }
-  }
-
-  String _getTimeAgo(Timestamp? timestamp) {
-    if (timestamp == null) return '';
-    try {
-      final date = timestamp.toDate();
-      final now = DateTime.now();
-      final difference = now.difference(date);
-
-      if (difference.inDays > 0) {
-        return '${difference.inDays}d ago';
-      } else if (difference.inHours > 0) {
-        return '${difference.inHours}h ago';
-      } else if (difference.inMinutes > 0) {
-        return '${difference.inMinutes}m ago';
-      } else {
-        return 'Just now';
-      }
-    } catch (e) {
-      return '';
     }
   }
 
@@ -169,47 +202,127 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
     await Future.delayed(const Duration(milliseconds: 500));
   }
 
+  String _getTimeAgo(Timestamp? timestamp) {
+    if (timestamp == null) return '';
+    try {
+      return timeago.format(timestamp.toDate());
+    } catch (e) {
+      return '';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_user == null) {
+    if (user == null) {
       return Scaffold(
         appBar: AppBar(
-          title: const Text('Customer Support'),
-          backgroundColor: Colors.teal,
+          title: const Text(
+            'Customer Support',
+            style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1),
+          ),
+          flexibleSpace: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFF1E3C72), Color(0xFF2A5298)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+          ),
           foregroundColor: Colors.white,
+          elevation: 0,
         ),
-        body: const Center(
-          child: Text('Please login to use chat support'),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.chat,
+                  size: 60,
+                  color: Colors.blue.shade200,
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Please login to use chat support',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isAdmin ? 'Support Chats' : 'Customer Support'),
-        backgroundColor: Colors.teal,
+        title: Text(
+          _isAdmin ? 'Support Chats' : 'Customer Support',
+          style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1),
+        ),
+        flexibleSpace: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: _isAdmin 
+                  ? [Colors.purple.shade400, Colors.purple.shade700]
+                  : [Colors.teal.shade400, Colors.teal.shade700],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+        ),
         foregroundColor: Colors.white,
+        elevation: 0,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _refreshData,
-            tooltip: 'Refresh',
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: _refreshData,
+              tooltip: 'Refresh',
+            ),
           ),
         ],
       ),
       body: RefreshIndicator(
         key: _refreshKey,
         onRefresh: _refreshData,
-        child: _isAdmin 
-            ? _buildAdminChatList()
-            : _buildUserChat(),
+        color: _isAdmin ? Colors.purple : Colors.teal,
+        child: FadeTransition(
+          opacity: _fadeAnimation,
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.grey.shade50,
+                  Colors.white,
+                ],
+              ),
+            ),
+            child: _isAdmin ? _buildAdminChatList() : _buildUserChat(),
+          ),
+        ),
       ),
     );
   }
 
   Widget _buildAdminChatList() {
     return StreamBuilder<QuerySnapshot>(
-      key: const Key('admin_chat_list'),
       stream: FirebaseFirestore.instance
           .collection('chats')
           .where('status', isEqualTo: 'active')
@@ -217,7 +330,11 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
           .snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
+          return const Center(
+            child: CircularProgressIndicator(
+              color: Colors.purple,
+            ),
+          );
         }
 
         if (snapshot.hasError) {
@@ -228,17 +345,18 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
                 Icon(Icons.error_outline, size: 60, color: Colors.red[300]),
                 const SizedBox(height: 16),
                 const Text('Error loading chats'),
-                const SizedBox(height: 8),
-                Text(
-                  snapshot.error.toString(),
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  textAlign: TextAlign.center,
-                ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
                   onPressed: _refreshData,
                   icon: const Icon(Icons.refresh),
                   label: const Text('Try Again'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.purple,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -250,16 +368,34 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.chat_bubble_outline, size: 80, color: Colors.grey[400]),
-                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.purple.shade50,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.chat_bubble_outline,
+                    size: 60,
+                    color: Colors.purple.shade200,
+                  ),
+                ),
+                const SizedBox(height: 24),
                 const Text(
                   'No active chats',
-                  style: TextStyle(fontSize: 18, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey,
+                  ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'When users start chatting, they will appear here',
-                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[600],
+                  ),
                   textAlign: TextAlign.center,
                 ),
               ],
@@ -268,67 +404,223 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
         }
 
         return ListView.builder(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(12),
           itemCount: snapshot.data!.docs.length,
           itemBuilder: (context, index) {
             var chat = snapshot.data!.docs[index];
             var data = chat.data() as Map<String, dynamic>;
-            bool isSelected = _selectedChatId == chat.id;
+            bool hasUnread = data['adminUnread'] == true;
             
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              color: isSelected ? Colors.teal.shade50 : null,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(
-                  color: isSelected ? Colors.teal : Colors.transparent,
-                  width: 2,
-                ),
-              ),
-              child: ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.teal.shade100,
-                  child: Text(
-                    (data['userName']?[0] ?? 'U').toUpperCase(),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+            return TweenAnimationBuilder<double>(
+              duration: Duration(milliseconds: 300 + (index * 100)),
+              tween: Tween(begin: 0.0, end: 1.0),
+              curve: Curves.easeOut,
+              builder: (context, value, child) {
+                return Opacity(
+                  opacity: value,
+                  child: Transform.translate(
+                    offset: Offset(0, 20 * (1 - value)),
+                    child: child,
                   ),
-                ),
-                title: Text(
-                  data['userName'] ?? 'Unknown User',
-                  style: TextStyle(
-                    fontWeight: data['lastMessage'] != null ? FontWeight.bold : FontWeight.normal,
+                );
+              },
+              child: Dismissible(
+                key: Key(chat.id),
+                background: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    borderRadius: BorderRadius.circular(16),
                   ),
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.only(right: 20),
+                  child: const Icon(Icons.delete, color: Colors.white, size: 30),
                 ),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      data['lastMessage'] ?? 'Tap to start chat',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                direction: DismissDirection.endToStart,
+                confirmDismiss: (direction) async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      title: const Text('Delete Chat'),
+                      content: Text('Delete chat with ${data['userName']}?'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.grey,
+                          ),
+                          child: const Text('Cancel'),
+                        ),
+                        ElevatedButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text('Delete'),
+                        ),
+                      ],
                     ),
-                    if (data['lastMessageTime'] != null)
-                      Text(
-                        _getTimeAgo(data['lastMessageTime']),
-                        style: TextStyle(fontSize: 10, color: Colors.grey[500]),
-                      ),
-                  ],
-                ),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  Navigator.pushNamed(
-                    context,
-                    '/chat-detail',
-                    arguments: {
-                      'chatId': chat.id,
-                      'userName': data['userName'],
-                      'userId': data['userId'],
-                      'userEmail': data['userEmail'],
-                    },
-                  ).then((_) {
-                    setState(() {});
-                  });
+                  );
+                  return confirm;
                 },
+                onDismissed: (direction) {
+                  _deleteChat(chat.id, data['userName']);
+                },
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: hasUnread
+                          ? [Colors.purple.shade50, Colors.white]
+                          : [Colors.white, Colors.white],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: hasUnread ? Colors.purple : Colors.grey.shade200,
+                      width: hasUnread ? 2 : 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.purple.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.all(16),
+                    leading: Stack(
+                      children: [
+                        CircleAvatar(
+                          radius: 28,
+                          backgroundColor: hasUnread ? Colors.purple : Colors.purple.shade100,
+                          child: Text(
+                            (data['userName']?[0] ?? 'U').toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: hasUnread ? Colors.white : Colors.purple,
+                            ),
+                          ),
+                        ),
+                        if (hasUnread)
+                          Positioned(
+                            top: 0,
+                            right: 0,
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Text(
+                                '',
+                                style: TextStyle(fontSize: 8),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    title: Text(
+                      data['userName'] ?? 'Unknown User',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: hasUnread ? FontWeight.bold : FontWeight.w600,
+                        color: hasUnread ? Colors.purple.shade700 : Colors.black87,
+                      ),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 4),
+                        Text(
+                          data['lastMessage'] ?? 'Tap to start chat',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: hasUnread ? Colors.purple.shade600 : Colors.grey[600],
+                            fontSize: 13,
+                          ),
+                        ),
+                        if (data['lastMessageTime'] != null) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.access_time,
+                                size: 12,
+                                color: hasUnread ? Colors.purple.shade400 : Colors.grey[500],
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                _getTimeAgo(data['lastMessageTime']),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: hasUnread ? Colors.purple.shade400 : Colors.grey[500],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (hasUnread)
+                          Container(
+                            margin: const EdgeInsets.only(right: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.purple,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text(
+                              'NEW',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.purple.shade50,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.purple,
+                            size: 20,
+                          ),
+                        ),
+                      ],
+                    ),
+                    onTap: () {
+                      _markChatAsRead(chat.id);
+                      Navigator.pushNamed(
+                        context,
+                        '/chat-detail',
+                        arguments: {
+                          'chatId': chat.id,
+                          'userName': data['userName'],
+                          'userId': data['userId'],
+                          'userEmail': data['userEmail'],
+                          'isAdmin': true,
+                        },
+                      ).then((_) => setState(() {}));
+                    },
+                  ),
+                ),
               ),
             );
           },
@@ -343,191 +635,93 @@ class _ChatSupportPageState extends State<ChatSupportPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            const Text('Connecting to support...'),
-            const SizedBox(height: 8),
-            Text(
-              'Please wait while we connect you to an agent',
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.teal.shade50,
+                shape: BoxShape.circle,
+              ),
+              child: const CircularProgressIndicator(
+                color: Colors.teal,
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Connecting to support...',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey,
+              ),
             ),
           ],
         ),
       );
     }
 
-    return Column(
-      children: [
-        Expanded(
-          child: StreamBuilder<QuerySnapshot>(
-            key: Key('chat_messages_${_chatId ?? 'new'}'),
-            stream: FirebaseFirestore.instance
-                .collection('messages')
-                .where('chatId', isEqualTo: _chatId)
-                .orderBy('timestamp')
-                .snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-
-              if (snapshot.hasError) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.error_outline, size: 60, color: Colors.red[300]),
-                      const SizedBox(height: 16),
-                      const Text('Error loading messages'),
-                      const SizedBox(height: 8),
-                      Text(
-                        snapshot.error.toString(),
-                        style: const TextStyle(fontSize: 12, color: Colors.grey),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                );
-              }
-
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.chat, size: 60, color: Colors.grey[400]),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Start a conversation',
-                        style: TextStyle(fontSize: 16, color: Colors.grey),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Send a message to customer support',
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                );
-              }
-
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _scrollToBottom();
-              });
-
-              return ListView.builder(
-                controller: _scrollController,
-                padding: const EdgeInsets.all(12),
-                itemCount: snapshot.data!.docs.length,
-                itemBuilder: (context, index) {
-                  var msg = snapshot.data!.docs[index];
-                  var data = msg.data() as Map<String, dynamic>;
-                  bool isMe = data['senderId'] == _user!.uid;
-
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: Row(
-                      mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
-                      children: [
-                        if (!isMe)
-                          CircleAvatar(
-                            radius: 16,
-                            backgroundColor: Colors.teal.shade100,
-                            child: const Icon(Icons.support_agent, size: 16, color: Colors.teal),
-                          ),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: isMe ? Colors.teal : Colors.grey[200],
-                              borderRadius: BorderRadius.circular(16).copyWith(
-                                bottomLeft: isMe ? const Radius.circular(16) : const Radius.circular(4),
-                                bottomRight: isMe ? const Radius.circular(4) : const Radius.circular(16),
-                              ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  data['message'] ?? '',
-                                  style: TextStyle(
-                                    color: isMe ? Colors.white : Colors.black87,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _formatTime(data['timestamp']),
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: isMe ? Colors.white70 : Colors.grey[600],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        if (isMe) const SizedBox(width: 8),
-                      ],
-                    ),
-                  );
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.teal.shade50,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.chat,
+              size: 60,
+              color: Colors.teal,
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Chat started!',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: Colors.teal,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'You can now chat with support',
+            style: TextStyle(
+              fontSize: 16,
+              color: Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pushNamed(
+                context,
+                '/chat-detail',
+                arguments: {
+                  'chatId': _chatId,
+                  'userName': 'Support Agent',
+                  'userId': user!.uid,
+                  'userEmail': user!.email,
+                  'isAdmin': false,
                 },
               );
             },
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.grey[100],
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 5,
-                offset: const Offset(0, -2),
+            icon: const Icon(Icons.chat),
+            label: const Text('Open Chat'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(30),
               ),
-            ],
+              elevation: 5,
+              shadowColor: Colors.teal.withOpacity(0.3),
+            ),
           ),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _messageController,
-                  decoration: InputDecoration(
-                    hintText: 'Type your message...',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    filled: true,
-                    fillColor: Colors.white,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                  ),
-                  onSubmitted: (_) => _sendMessage(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              CircleAvatar(
-                backgroundColor: Colors.teal,
-                child: IconButton(
-                  icon: const Icon(Icons.send, color: Colors.white, size: 18),
-                  onPressed: _sendMessage,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+        ],
+      ),
     );
-  }
-
-  @override
-  void dispose() {
-    _messageController.dispose();
-    _scrollController.dispose();
-    super.dispose();
   }
 }
