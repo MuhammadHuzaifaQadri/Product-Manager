@@ -64,6 +64,13 @@ class _ProductsState extends State<Products> with SingleTickerProviderStateMixin
     }
   }
 
+  // 🔥 FIX: Jab bhi page refresh ho, admin status dobara check karo
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _checkAdmin();
+  }
+
   @override
   void dispose() {
     _animationController.dispose();
@@ -126,8 +133,12 @@ class _ProductsState extends State<Products> with SingleTickerProviderStateMixin
   }
 
   Future<void> _checkAdmin() async {
-    _isAdmin = await UserRoleManager.isAdmin();
-    setState(() {});
+    bool adminStatus = await UserRoleManager.isAdmin();
+    if (_isAdmin != adminStatus) {
+      setState(() {
+        _isAdmin = adminStatus;
+      });
+    }
   }
 
   Future<void> _loadFavorites() async {
@@ -2386,7 +2397,7 @@ class _ProductsState extends State<Products> with SingleTickerProviderStateMixin
                       padding: const EdgeInsets.all(12),
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 2,
-                        childAspectRatio: MediaQuery.of(context).size.width > 500 ? 0.9 : 0.85, // 👈 RESPONSIVE
+                        childAspectRatio: MediaQuery.of(context).size.width > 500 ? 0.9 : 0.85,
                         crossAxisSpacing: 12,
                         mainAxisSpacing: 12,
                       ),
